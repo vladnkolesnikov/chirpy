@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"sync/atomic"
@@ -15,6 +16,10 @@ func (apiConfig *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler
 		apiConfig.fileserverHits.Add(1)
 		next.ServeHTTP(w, r)
 	})
+}
+
+type ApiError struct {
+	Error string `json:"error"`
 }
 
 func main() {
@@ -54,6 +59,54 @@ func main() {
 		res.Header().Add("Content-Type", "text/plain; charset=utf-8")
 		res.WriteHeader(http.StatusOK)
 		res.Write([]byte("OK"))
+	})
+
+	mux.HandleFunc("POST /api/validate_chirp", func(writer http.ResponseWriter, request *http.Request) {
+		type requestBody struct {
+			Body string `json:"body"`
+		}
+		reqBody := &requestBody{}
+
+		decoder := json.NewDecoder(request.Body)
+		err := decoder.Decode(reqBody)
+
+		if err != nil {
+			fmt.Printf("Error decoding request body: %s\n", err)
+
+			errResponse, _ := json.Marshal(ApiError{
+				Error: "Something went wrong",
+			})
+
+			writer.Header().Set("Content-Type", "application/json")
+			writer.WriteHeader(http.StatusInternalServerError)
+			writer.Write(errResponse)
+			return
+		}
+		defer request.Body.Close()
+
+		if len(reqBody.Body) > 140 {
+			fmt.Println("Request body too long")
+
+			errResponse, _ := json.Marshal(ApiError{
+				Error: "Chirp is too long",
+			})
+			writer.Header().Set("Content-Type", "application/json")
+			writer.WriteHeader(http.StatusBadRequest)
+			writer.Write(errResponse)
+			return
+		}
+
+		type validResponse struct {
+			Valid bool `json:"valid"`
+		}
+
+		resData, _ := json.Marshal(validResponse{
+			Valid: true,
+		})
+
+		writer.Header().Set("Content-Type", "application/json")
+		writer.WriteHeader(http.StatusOK)
+		writer.Write(resData)
 	})
 
 	server := &http.Server{
