@@ -1,8 +1,8 @@
 package main
 
 import (
+	"fmt"
 	"net/http"
-	"strconv"
 	"sync/atomic"
 )
 
@@ -28,21 +28,29 @@ func main() {
 
 	mux.Handle("/app/", config.middlewareMetricsInc(fileHandler))
 
-	mux.HandleFunc("/metrics", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("GET /admin/metrics", func(w http.ResponseWriter, r *http.Request) {
 		hits := int(config.fileserverHits.Load())
 
-		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.Header().Set("Content-Type", "text/html")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("Hits: " + strconv.Itoa(hits)))
+		template := fmt.Sprintf(`
+		<html>
+	  		<body>
+				<h1>Welcome, Chirpy Admin</h1>
+				<p>Chirpy has been visited %d times!</p>
+	  		</body>
+		</html>`, hits)
+
+		w.Write([]byte(template))
 	})
 
-	mux.HandleFunc("/reset", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("POST /admin/reset", func(w http.ResponseWriter, r *http.Request) {
 		config.fileserverHits.Swap(0)
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
 	})
 
-	mux.HandleFunc("/healthz", func(res http.ResponseWriter, req *http.Request) {
+	mux.HandleFunc("GET /api/healthz", func(res http.ResponseWriter, req *http.Request) {
 		res.Header().Add("Content-Type", "text/plain; charset=utf-8")
 		res.WriteHeader(http.StatusOK)
 		res.Write([]byte("OK"))
