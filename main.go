@@ -3,23 +3,24 @@ package main
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log"
 	"os"
 
+	"github.com/google/uuid"
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/joho/godotenv"
 	"github.com/vladnkolesnikov/chirpy/internal/database"
 
 	"net/http"
-	"slices"
-	"strings"
 	"sync/atomic"
 )
 
 type apiConfig struct {
 	fileserverHits atomic.Int32
 	dbQueries      *database.Queries
-	platform       string
+	env            string
 }
 
 func (apiConfig *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
@@ -31,19 +32,6 @@ func (apiConfig *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler
 
 type ApiError struct {
 	Error string `json:"error"`
-}
-
-func hideWords(body string) string {
-	profaneWords := []string{"kerfuffle", "sharbert", "fornax"}
-	strs := strings.Split(body, " ")
-
-	for index, word := range strs {
-		if slices.Contains(profaneWords, strings.ToLower(word)) == true {
-			strs[index] = "****"
-		}
-	}
-
-	return strings.Join(strs, " ")
 }
 
 func respondWithError(w http.ResponseWriter, code int, msg string) {
@@ -58,22 +46,37 @@ func respondWithError(w http.ResponseWriter, code int, msg string) {
 func respondWithJSON[T any](w http.ResponseWriter, code int, payload T) {
 	resData, _ := json.Marshal(payload)
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(code)
+	if code != http.StatusOK {
+		w.WriteHeader(code)
+	}
+
 	w.Write(resData)
 }
 
 func main() {
 	godotenv.Load()
 	dbURL := os.Getenv("DB_URL")
-	platform := os.Getenv("PLATFORM")
+	env := os.Getenv("PLATFORM")
 
 	db, err := sql.Open("pgx", dbURL)
+
+	if err != nil {
+		log.Fatalf("Error connecting to database: %v", err)
+	}
+
+	defer func() {
+		err := db.Close()
+		if err != nil {
+			log.Fatalf("Error closing database connection: %v", err)
+		}
+	}()
+
 	dbQueries := database.New(db)
 
 	config := apiConfig{
 		fileserverHits: atomic.Int32{},
 		dbQueries:      dbQueries,
-		platform:       platform,
+		env:            env,
 	}
 
 	mux := http.NewServeMux()
@@ -99,7 +102,7 @@ func main() {
 	})
 
 	mux.HandleFunc("POST /admin/reset", func(w http.ResponseWriter, r *http.Request) {
-		if config.platform != "dev" {
+		if config.env != "dev" {
 			respondWithError(w, http.StatusForbidden, "Forbidden")
 			return
 		}
@@ -148,35 +151,86 @@ func main() {
 		respondWithJSON(w, http.StatusCreated, user)
 	})
 
-	mux.HandleFunc("POST /api/validate_chirp", func(writer http.ResponseWriter, request *http.Request) {
+	mux.HandleFunc("POST /api/chirps", func(w http.ResponseWriter, r *http.Request) {
 		type requestBody struct {
-			Body string `json:"body"`
+			Body   string `json:"body"`
+			UserId string `json:"user_id"`
 		}
 		reqBody := &requestBody{}
 
-		decoder := json.NewDecoder(request.Body)
+		decoder := json.NewDecoder(r.Body)
 		err := decoder.Decode(reqBody)
 
 		if err != nil {
-			fmt.Printf("Error decoding request body: %s\n", err)
-			respondWithError(writer, http.StatusInternalServerError, "Something went wrong")
+			fmt.Printf("Error decoding r body: %s\n", err)
+			respondWithError(w, http.StatusInternalServerError, "Something went wrong")
 			return
 		}
-		defer request.Body.Close()
+		defer r.Body.Close()
 
 		if len(reqBody.Body) > 140 {
 			fmt.Println("Request body too long")
-			respondWithError(writer, http.StatusBadRequest, "Chirp is too long")
+			respondWithError(w, http.StatusBadRequest, "Chirp is too long")
 			return
 		}
 
-		type validResponse struct {
-			CleanedBody string `json:"cleaned_body"`
+		if err := uuid.Validate(reqBody.UserId); err != nil {
+			fmt.Println("Invalid userId UUID")
+			respondWithError(w, http.StatusBadRequest, "Invalid userId")
+			return
 		}
 
-		respondWithJSON(writer, http.StatusOK, validResponse{
-			CleanedBody: hideWords(reqBody.Body),
+		chirp, err := config.dbQueries.CreateChirp(r.Context(), database.CreateChirpParams{
+			Body:   reqBody.Body,
+			UserID: uuid.MustParse(reqBody.UserId),
 		})
+
+		if err != nil {
+			fmt.Printf("Error creating new chirp: %s\n", err)
+			respondWithError(w, http.StatusInternalServerError, fmt.Sprintf("something went wrong: %v", err))
+			return
+		}
+
+		respondWithJSON(w, http.StatusCreated, chirp)
+	})
+
+	mux.HandleFunc("GET /api/chirps", func(w http.ResponseWriter, r *http.Request) {
+		chirps, err := config.dbQueries.GetChirps(r.Context())
+		if err != nil {
+			fmt.Printf("Error getting chirps: %s\n", err)
+			respondWithError(w, http.StatusInternalServerError, fmt.Sprintf("Something went wrong: %v", err))
+			return
+		}
+
+		respondWithJSON(w, http.StatusOK, chirps)
+	})
+
+	mux.HandleFunc("GET /api/chirps/{chirpID}", func(w http.ResponseWriter, r *http.Request) {
+		chirpIDParam := r.PathValue("chirpID")
+		err := uuid.Validate(chirpIDParam)
+
+		if err != nil {
+			fmt.Println("Invalid chirpID uuid")
+			respondWithError(w, http.StatusInternalServerError, fmt.Sprintf("Something went wrong: %v", err))
+			return
+		}
+
+		chirpID := uuid.MustParse(chirpIDParam)
+
+		chirp, err := config.dbQueries.GetChirp(r.Context(), chirpID)
+		if errors.Is(err, sql.ErrNoRows) {
+			fmt.Printf("Chirp with ID %v not found\n", chirpID)
+			http.Error(w, "Not found", http.StatusNotFound)
+			return
+		}
+
+		if err != nil {
+			fmt.Printf("Error getting chirp by ID %v: %s\n", chirpID, err)
+			respondWithError(w, http.StatusInternalServerError, fmt.Sprintf("Something went wrong: %v", err))
+			return
+		}
+
+		respondWithJSON(w, http.StatusOK, chirp)
 	})
 
 	server := &http.Server{

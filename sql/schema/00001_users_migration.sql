@@ -2,9 +2,9 @@
 CREATE TABLE users
 (
     id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    email      VARCHAR(200) NOT NULL UNIQUE
+    created_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    email      VARCHAR(320) NOT NULL UNIQUE
 );
 
 -- +goose Down
