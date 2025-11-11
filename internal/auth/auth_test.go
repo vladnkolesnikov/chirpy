@@ -3,8 +3,10 @@ package auth
 import "testing"
 
 func TestHashPassword(t *testing.T) {
-	password := "test_password"
-	hash, _ := HashPassword(password)
+	password1 := "correctPassword123!"
+	password2 := "anotherPassword456!"
+	hash1, _ := HashPassword(password1)
+	hash2, _ := HashPassword(password2)
 
 	tests := []struct {
 		name          string
@@ -15,16 +17,37 @@ func TestHashPassword(t *testing.T) {
 	}{
 		{
 			name:          "Correct password",
-			password:      password,
-			hash:          hash,
+			password:      password1,
+			hash:          hash1,
 			wantErr:       false,
 			matchPassword: true,
 		},
 		{
 			name:          "Incorrect password",
-			password:      "wrongPassword",
-			hash:          hash,
+			password:      password2,
+			hash:          hash1,
 			wantErr:       false,
+			matchPassword: false,
+		},
+		{
+			name:          "Password doesn't match different hash",
+			password:      password1,
+			hash:          hash2,
+			wantErr:       false,
+			matchPassword: false,
+		},
+		{
+			name:          "Empty password",
+			password:      "",
+			hash:          hash1,
+			wantErr:       false,
+			matchPassword: false,
+		},
+		{
+			name:          "Invalid hash",
+			password:      password1,
+			hash:          "invalidhash",
+			wantErr:       true,
 			matchPassword: false,
 		},
 	}
