@@ -282,7 +282,7 @@ func main() {
 
 		chirpID := uuid.MustParse(chirpIDParam)
 
-		chirp, err := config.dbQueries.GetChirp(r.Context(), chirpID)
+		chirp, err := config.dbQueries.GetChirpByID(r.Context(), chirpID)
 		if errors.Is(err, sql.ErrNoRows) {
 			fmt.Printf("Chirp with ID %v not found\n", chirpID)
 			http.Error(w, "Not found", http.StatusNotFound)
