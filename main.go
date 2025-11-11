@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"time"
 
 	"github.com/google/uuid"
 	_ "github.com/jackc/pgx/v5/stdlib"
@@ -22,6 +23,7 @@ type apiConfig struct {
 	fileserverHits atomic.Int32
 	dbQueries      *database.Queries
 	env            string
+	secret         string
 }
 
 func (apiConfig *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
@@ -64,6 +66,7 @@ func main() {
 	godotenv.Load()
 	dbURL := os.Getenv("DB_URL")
 	env := os.Getenv("PLATFORM")
+	secret := os.Getenv("SECRET")
 
 	db, err := sql.Open("pgx", dbURL)
 
@@ -84,6 +87,7 @@ func main() {
 		fileserverHits: atomic.Int32{},
 		dbQueries:      dbQueries,
 		env:            env,
+		secret:         secret,
 	}
 
 	mux := http.NewServeMux()
@@ -180,8 +184,9 @@ func main() {
 
 	mux.HandleFunc("POST /api/login", func(w http.ResponseWriter, r *http.Request) {
 		type requestPayload struct {
-			Password string `json:"password"`
-			Email    string `json:"email"`
+			Password         string `json:"password"`
+			Email            string `json:"email"`
+			ExpiresInSeconds *uint8 `json:"expires_in_seconds,omitempty"`
 		}
 
 		reqBody, err := decodeBody(r, requestPayload{})
@@ -215,19 +220,55 @@ func main() {
 			return
 		}
 
-		respondWithJSON(w, http.StatusOK, user)
+		type response struct {
+			database.User
+			Token string `json:"token"`
+		}
+
+		var expires time.Duration
+
+		if reqBody.ExpiresInSeconds != nil {
+			expires = time.Duration(*reqBody.ExpiresInSeconds) * time.Second
+		} else {
+			expires = time.Hour
+		}
+
+		token, err := auth.MakeJWT(user.ID, config.secret, expires)
+		if err != nil {
+			fmt.Printf("Error creating token for user with ID: %v\n", user.ID)
+			respondWithError(w, http.StatusInternalServerError, "Something went wrong")
+			return
+		}
+
+		respondWithJSON(w, http.StatusOK, response{
+			User:  user,
+			Token: token,
+		})
 	})
 
 	mux.HandleFunc("POST /api/chirps", func(w http.ResponseWriter, r *http.Request) {
-		type requestPayload struct {
-			Body   string `json:"body"`
-			UserId string `json:"user_id"`
+		token, err := auth.GetBearerToken(r.Header)
+
+		if err != nil {
+			fmt.Printf("Error reading auth token: %s\n", err)
+			respondWithError(w, http.StatusUnauthorized, "Token is missing")
+			return
 		}
 
+		userID, err := auth.ValidateJWT(token, config.secret)
+		if err != nil {
+			fmt.Printf("Error validating JWT %s\n", err)
+			respondWithError(w, http.StatusUnauthorized, "Something went wrong")
+			return
+		}
+
+		type requestPayload struct {
+			Body string `json:"body"`
+		}
 		reqBody, err := decodeBody(r, requestPayload{})
 
 		if err != nil {
-			fmt.Printf("Error decoding r body: %s\n", err)
+			fmt.Printf("Error decoding request body: %s\n", err)
 			respondWithError(w, http.StatusInternalServerError, "Something went wrong")
 			return
 		}
@@ -239,20 +280,14 @@ func main() {
 			return
 		}
 
-		if err := uuid.Validate(reqBody.UserId); err != nil {
-			fmt.Println("Invalid userId UUID")
-			respondWithError(w, http.StatusBadRequest, "Invalid userId")
-			return
-		}
-
 		chirp, err := config.dbQueries.CreateChirp(r.Context(), database.CreateChirpParams{
 			Body:   reqBody.Body,
-			UserID: uuid.MustParse(reqBody.UserId),
+			UserID: userID,
 		})
 
 		if err != nil {
 			fmt.Printf("Error creating new chirp: %s\n", err)
-			respondWithError(w, http.StatusInternalServerError, fmt.Sprintf("something went wrong: %v", err))
+			respondWithError(w, http.StatusInternalServerError, "Something went wrong")
 			return
 		}
 
@@ -263,7 +298,7 @@ func main() {
 		chirps, err := config.dbQueries.GetChirps(r.Context())
 		if err != nil {
 			fmt.Printf("Error getting chirps: %s\n", err)
-			respondWithError(w, http.StatusInternalServerError, fmt.Sprintf("Something went wrong: %v", err))
+			respondWithError(w, http.StatusInternalServerError, "Something went wrong")
 			return
 		}
 

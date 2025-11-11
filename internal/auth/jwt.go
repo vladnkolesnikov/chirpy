@@ -1,7 +1,10 @@
 package auth
 
 import (
+	"errors"
 	"fmt"
+	"net/http"
+	"strings"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -29,20 +32,26 @@ func ValidateJWT(tokenString, tokenSecret string) (uuid.UUID, error) {
 	tempUUID := uuid.UUID{}
 
 	if err != nil {
-		fmt.Printf("Error parsing token: %s\n", err)
-		return tempUUID, err
+		return tempUUID, fmt.Errorf("Error parsing token: %s\n", err)
 	}
 
-	subject, err := token.Claims.GetSubject()
+	userID, err := token.Claims.GetSubject()
 	if err != nil {
-		fmt.Printf("Error getting token's subject: %s\n", err)
-		return tempUUID, err
+		return tempUUID, fmt.Errorf("Error getting subject: %s\n", err)
 	}
 
-	if err := uuid.Validate(subject); err != nil {
-		fmt.Printf("Error validation token from jwt subject: %s\n", err)
-		return tempUUID, err
+	if err = uuid.Validate(userID); err != nil {
+		return tempUUID, fmt.Errorf("Error validating userID: %s\n", err)
 	}
 
-	return uuid.MustParse(subject), nil
+	return uuid.MustParse(userID), nil
+}
+
+func GetBearerToken(headers http.Header) (string, error) {
+	authHeader := headers.Get("Authorization")
+	if authHeader == "" {
+		return "", errors.New("authorization token is missing")
+	}
+
+	return strings.Replace(authHeader, "Bearer ", "", 1), nil
 }
