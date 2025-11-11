@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/joho/godotenv"
+	"github.com/vladnkolesnikov/chirpy/internal/auth"
 	"github.com/vladnkolesnikov/chirpy/internal/database"
 
 	"net/http"
@@ -51,6 +52,12 @@ func respondWithJSON[T any](w http.ResponseWriter, code int, payload T) {
 	}
 
 	w.Write(resData)
+}
+
+func decodeBody[T any](r *http.Request, body T) (T, error) {
+	decoder := json.NewDecoder(r.Body)
+	err := decoder.Decode(&body)
+	return body, err
 }
 
 func main() {
@@ -117,20 +124,30 @@ func main() {
 		respondWithJSON(w, http.StatusOK, "Ok")
 	})
 
-	mux.HandleFunc("GET /api/healthz", func(res http.ResponseWriter, req *http.Request) {
-		res.Header().Add("Content-Type", "text/plain; charset=utf-8")
-		res.WriteHeader(http.StatusOK)
-		res.Write([]byte("OK"))
+	mux.HandleFunc("GET /api/healthz", func(w http.ResponseWriter, req *http.Request) {
+		err = db.Ping()
+		if err != nil {
+			fmt.Printf("Error pinging database: %v\n", err)
+			respondWithError(w, http.StatusInternalServerError, "Something went wrong")
+			return
+		}
+
+		type response struct {
+			Status string `json:"status"`
+		}
+
+		respondWithJSON(w, http.StatusOK, response{
+			Status: "ok",
+		})
 	})
 
 	mux.HandleFunc("POST /api/users", func(w http.ResponseWriter, r *http.Request) {
-		type requestBody struct {
-			Email string `json:"email"`
+		type requestPayload struct {
+			Password string `json:"password"`
+			Email    string `json:"email"`
 		}
-		reqBody := &requestBody{}
 
-		decoder := json.NewDecoder(r.Body)
-		err := decoder.Decode(reqBody)
+		reqBody, err := decodeBody(r, requestPayload{})
 
 		if err != nil {
 			fmt.Println("Error decoding body:", err)
@@ -140,7 +157,17 @@ func main() {
 
 		defer r.Body.Close()
 
-		user, err := config.dbQueries.CreateUser(r.Context(), reqBody.Email)
+		hash, err := auth.HashPassword(reqBody.Password)
+		if err != nil {
+			fmt.Printf("Error hashing password: %s\n", err)
+			respondWithError(w, http.StatusInternalServerError, "Something went wrong")
+			return
+		}
+
+		user, err := config.dbQueries.CreateUser(r.Context(), database.CreateUserParams{
+			Email:    reqBody.Email,
+			Password: hash,
+		})
 
 		if err != nil {
 			fmt.Println("Error creating user:", err)
@@ -151,15 +178,53 @@ func main() {
 		respondWithJSON(w, http.StatusCreated, user)
 	})
 
+	mux.HandleFunc("POST /api/login", func(w http.ResponseWriter, r *http.Request) {
+		type requestPayload struct {
+			Password string `json:"password"`
+			Email    string `json:"email"`
+		}
+
+		reqBody, err := decodeBody(r, requestPayload{})
+
+		if err != nil {
+			fmt.Printf("Error decoding request body: %s\n", err)
+			respondWithError(w, http.StatusInternalServerError, "Something went wrong")
+			return
+		}
+		defer r.Body.Close()
+
+		user, err := config.dbQueries.GetUserByEmail(r.Context(), reqBody.Email)
+
+		if errors.Is(err, sql.ErrNoRows) {
+			fmt.Printf("User with email %s not found\n", reqBody.Email)
+			respondWithError(w, http.StatusUnauthorized, "Incorrect email or password")
+			return
+		}
+
+		matches, err := auth.CheckPasswordHash(reqBody.Password, user.HashedPassword)
+
+		if err != nil {
+			fmt.Printf("Error matching passwords: %s\n", err)
+			respondWithError(w, http.StatusUnauthorized, "Incorrect email or password")
+			return
+		}
+
+		if !matches {
+			fmt.Println("Invalid password")
+			respondWithError(w, http.StatusUnauthorized, "Incorrect email or password")
+			return
+		}
+
+		respondWithJSON(w, http.StatusOK, user)
+	})
+
 	mux.HandleFunc("POST /api/chirps", func(w http.ResponseWriter, r *http.Request) {
-		type requestBody struct {
+		type requestPayload struct {
 			Body   string `json:"body"`
 			UserId string `json:"user_id"`
 		}
-		reqBody := &requestBody{}
 
-		decoder := json.NewDecoder(r.Body)
-		err := decoder.Decode(reqBody)
+		reqBody, err := decodeBody(r, requestPayload{})
 
 		if err != nil {
 			fmt.Printf("Error decoding r body: %s\n", err)
