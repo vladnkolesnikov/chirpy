@@ -2,6 +2,7 @@ package utils
 
 import (
 	"encoding/json"
+	"log"
 	"net/http"
 )
 
@@ -19,12 +20,16 @@ func RespondWithError(w http.ResponseWriter, code int, msg string) {
 }
 
 func RespondWithJSON[T any](w http.ResponseWriter, code int, payload T) {
-	resData, _ := json.Marshal(payload)
 	w.Header().Set("Content-Type", "application/json")
-	if code != http.StatusOK {
-		w.WriteHeader(code)
+	resData, err := json.Marshal(payload)
+
+	if err != nil {
+		log.Printf("Error marshalling JSON: %s", err)
+		w.WriteHeader(http.StatusInternalServerError)
+		return
 	}
 
+	w.WriteHeader(code)
 	w.Write(resData)
 }
 

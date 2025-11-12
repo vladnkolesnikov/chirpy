@@ -11,11 +11,13 @@ import (
 	"github.com/google/uuid"
 )
 
+const ISSUER = "chirpy"
+
 func MakeJWT(userID uuid.UUID, tokenSecret string, expiresIn time.Duration) (string, error) {
 	now := time.Now().UTC()
 
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.RegisteredClaims{
-		Issuer:    "chirpy",
+		Issuer:    ISSUER,
 		Subject:   userID.String(),
 		ExpiresAt: jwt.NewNumericDate(now.Add(expiresIn)),
 		IssuedAt:  jwt.NewNumericDate(now),
@@ -29,22 +31,30 @@ func ValidateJWT(tokenString, tokenSecret string) (uuid.UUID, error) {
 		return []byte(tokenSecret), nil
 	})
 
-	tempUUID := uuid.UUID{}
-
 	if err != nil {
-		return tempUUID, fmt.Errorf("Error parsing token: %s\n", err)
+		return uuid.Nil, fmt.Errorf("Error parsing token: %s\n", err)
 	}
 
 	userID, err := token.Claims.GetSubject()
 	if err != nil {
-		return tempUUID, fmt.Errorf("Error getting subject: %s\n", err)
+		return uuid.Nil, fmt.Errorf("Error getting subject: %s\n", err)
 	}
 
-	if err = uuid.Validate(userID); err != nil {
-		return tempUUID, fmt.Errorf("Error validating userID: %s\n", err)
+	issuer, err := token.Claims.GetIssuer()
+	if err != nil {
+		return uuid.Nil, err
 	}
 
-	return uuid.MustParse(userID), nil
+	if issuer != ISSUER {
+		return uuid.Nil, errors.New("invalid issuer")
+	}
+
+	id, err := uuid.Parse(userID)
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("Error validating userID: %s\n", err)
+	}
+
+	return id, nil
 }
 
 func GetBearerToken(headers http.Header) (string, error) {
