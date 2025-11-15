@@ -1,8 +1,10 @@
 package auth
 
-import "testing"
+import (
+	"testing"
+)
 
-func TestHashPassword(t *testing.T) {
+func TestCheckPasswordHash(t *testing.T) {
 	password1 := "correctPassword123!"
 	password2 := "anotherPassword456!"
 	hash1, _ := HashPassword(password1)
@@ -12,8 +14,8 @@ func TestHashPassword(t *testing.T) {
 		name          string
 		password      string
 		hash          string
-		matchPassword bool
 		wantErr       bool
+		matchPassword bool
 	}{
 		{
 			name:          "Correct password",
@@ -24,7 +26,7 @@ func TestHashPassword(t *testing.T) {
 		},
 		{
 			name:          "Incorrect password",
-			password:      password2,
+			password:      "wrongPassword",
 			hash:          hash1,
 			wantErr:       false,
 			matchPassword: false,
@@ -52,16 +54,14 @@ func TestHashPassword(t *testing.T) {
 		},
 	}
 
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			match, err := CheckPasswordHash(test.password, test.hash)
-
-			if (err != nil) != test.wantErr {
-				t.Errorf("CheckPasswordHash() error = %v, wantErr %v", err, test.wantErr)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			match, err := CheckPasswordHash(tt.password, tt.hash)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("CheckPasswordHash() error = %v, wantErr %v", err, tt.wantErr)
 			}
-
-			if !test.wantErr && match != test.matchPassword {
-				t.Errorf("CheckPasswordHash() expects %v, got %v", test.matchPassword, match)
+			if !tt.wantErr && match != tt.matchPassword {
+				t.Errorf("CheckPasswordHash() expects %v, got %v", tt.matchPassword, match)
 			}
 		})
 	}
