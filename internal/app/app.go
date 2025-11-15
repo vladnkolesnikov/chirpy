@@ -32,7 +32,19 @@ func New() *Config {
 
 	dbURL := os.Getenv("DB_URL")
 	env := os.Getenv("PLATFORM")
-	secret := os.Getenv("SECRET")
+	secret := os.Getenv("JWT_SECRET")
+
+	if dbURL == "" {
+		log.Fatal("DB_URL must be set")
+	}
+
+	if env == "" {
+		log.Fatal("PLATFORM must be set")
+	}
+
+	if secret == "" {
+		log.Fatal("JWT_SECRET environment variable is not set")
+	}
 
 	db, err := sql.Open("pgx", dbURL)
 

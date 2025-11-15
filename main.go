@@ -56,7 +56,7 @@ func main() {
 		err := appConfig.Queries.DeleteAllUsers(r.Context())
 
 		if err != nil {
-			fmt.Printf("Error deleting users: %s\n", err)
+			log.Printf("Error deleting users: %s\n", err)
 			utils.RespondWithError(w, http.StatusInternalServerError, "Error deleting users")
 			return
 		}
@@ -67,7 +67,7 @@ func main() {
 	mux.HandleFunc("GET /api/healthz", func(w http.ResponseWriter, req *http.Request) {
 		err := appConfig.DB.Ping()
 		if err != nil {
-			fmt.Printf("Error pinging database: %s\n", err)
+			log.Printf("Error pinging database: %s\n", err)
 			utils.RespondWithError(w, http.StatusInternalServerError, "Something went wrong")
 			return
 		}
@@ -90,7 +90,7 @@ func main() {
 		reqBody, err := utils.DecodeBody(r, requestPayload{})
 
 		if err != nil {
-			fmt.Println("Error decoding body:", err)
+			log.Println("Error decoding body:", err)
 			utils.RespondWithError(w, http.StatusInternalServerError, "Something went wrong")
 			return
 		}
@@ -99,7 +99,7 @@ func main() {
 
 		hash, err := auth.HashPassword(reqBody.Password)
 		if err != nil {
-			fmt.Printf("Error hashing password: %s\n", err)
+			log.Printf("Error hashing password: %s\n", err)
 			utils.RespondWithError(w, http.StatusInternalServerError, "Something went wrong")
 			return
 		}
@@ -110,7 +110,7 @@ func main() {
 		})
 
 		if err != nil {
-			fmt.Println("Error creating user:", err)
+			log.Println("Error creating user:", err)
 			utils.RespondWithError(w, http.StatusInternalServerError, "Something went wrong")
 			return
 		}
@@ -120,15 +120,14 @@ func main() {
 
 	mux.HandleFunc("POST /api/login", func(w http.ResponseWriter, r *http.Request) {
 		type requestPayload struct {
-			Password         string `json:"password"`
-			Email            string `json:"email"`
-			ExpiresInSeconds *uint8 `json:"expires_in_seconds,omitempty"`
+			Password string `json:"password"`
+			Email    string `json:"email"`
 		}
 
 		reqBody, err := utils.DecodeBody(r, requestPayload{})
 
 		if err != nil {
-			fmt.Printf("Error decoding request body: %s\n", err)
+			log.Printf("Error decoding request body: %s\n", err)
 			utils.RespondWithError(w, http.StatusInternalServerError, "Something went wrong")
 			return
 		}
@@ -137,7 +136,7 @@ func main() {
 		user, err := appConfig.Queries.GetUserByEmail(r.Context(), reqBody.Email)
 
 		if errors.Is(err, sql.ErrNoRows) {
-			fmt.Printf("User with email %s not found\n", reqBody.Email)
+			log.Printf("User with email %s not found\n", reqBody.Email)
 			utils.RespondWithError(w, http.StatusUnauthorized, "Incorrect email or password")
 			return
 		}
@@ -145,55 +144,134 @@ func main() {
 		matches, err := auth.CheckPasswordHash(reqBody.Password, user.HashedPassword)
 
 		if err != nil {
-			fmt.Printf("Error matching passwords: %s\n", err)
+			log.Printf("Error matching passwords: %s\n", err)
 			utils.RespondWithError(w, http.StatusUnauthorized, "Incorrect email or password")
 			return
 		}
 
 		if !matches {
-			fmt.Println("Invalid password")
+			log.Println("Invalid password")
 			utils.RespondWithError(w, http.StatusUnauthorized, "Incorrect email or password")
 			return
 		}
 
 		type response struct {
 			database.User
-			Token string `json:"token"`
+			Token        string `json:"token"`
+			RefreshToken string `json:"refresh_token"`
 		}
 
-		var expires time.Duration
-
-		if reqBody.ExpiresInSeconds != nil {
-			expires = time.Duration(*reqBody.ExpiresInSeconds) * time.Second
-		} else {
-			expires = time.Hour
-		}
-
-		token, err := auth.MakeJWT(user.ID, appConfig.Secret, expires)
+		token, err := auth.MakeJWT(user.ID, appConfig.Secret, time.Hour)
 		if err != nil {
-			fmt.Printf("Error creating token for user with ID: %v\n", user.ID)
-			utils.RespondWithError(w, http.StatusInternalServerError, "Something went wrong")
+			log.Printf("Error creating token for user with ID: %v\n", user.ID)
+			utils.RespondWithError(w, http.StatusInternalServerError, "Error creating jwt")
+			return
+		}
+
+		refreshToken, err := auth.MakeRefreshToken()
+		if err != nil {
+			log.Printf("Error creating refresh token: %s\n", err)
+			utils.RespondWithError(w, http.StatusInternalServerError, "Error creating refresh token")
+			return
+		}
+
+		if err = appConfig.Queries.CreateToken(r.Context(), database.CreateTokenParams{
+			Token:     refreshToken,
+			UserID:    user.ID,
+			ExpiresAt: time.Now().Add(time.Hour * 24 * 60),
+		}); err != nil {
+			log.Printf("Error saving refresh token: %s\n", err)
+			utils.RespondWithError(w, http.StatusInternalServerError, "Error occurs saving refresh token")
 			return
 		}
 
 		utils.RespondWithJSON(w, http.StatusOK, response{
-			User:  user,
-			Token: token,
+			User:         user,
+			Token:        token,
+			RefreshToken: refreshToken,
 		})
+	})
+
+	mux.HandleFunc("POST /api/refresh", func(w http.ResponseWriter, r *http.Request) {
+		authToken, err := auth.GetBearerToken(r.Header)
+		if err != nil {
+			log.Printf("Error reading auth header: %s\n", err)
+			utils.RespondWithError(w, http.StatusBadRequest, "Invalid authentication token")
+			return
+		}
+
+		tokenData, err := appConfig.Queries.GetToken(r.Context(), authToken)
+		if errors.Is(err, sql.ErrNoRows) {
+			log.Printf("Token not found")
+			utils.RespondWithError(w, http.StatusUnauthorized, "Invalid authorization token")
+			return
+		}
+
+		if err != nil {
+			log.Printf("Error reading refresh token from db: %s\n", err)
+			utils.RespondWithError(w, http.StatusInternalServerError, "Invalid authorization token")
+			return
+		}
+
+		if time.Now().After(tokenData.ExpiresAt) || tokenData.RevokedAt.Valid == true {
+			log.Printf("Expired token")
+			utils.RespondWithError(w, http.StatusUnauthorized, "Invalid authorization token")
+			return
+		}
+
+		type response struct {
+			Token string `json:"token"`
+		}
+
+		jwtToken, err := auth.MakeJWT(tokenData.UserID, appConfig.Secret, time.Hour)
+		if err != nil {
+			log.Printf("Error creating token for user with ID: %v\n", tokenData.UserID)
+			utils.RespondWithError(w, http.StatusInternalServerError, "Error creating jwt")
+			return
+		}
+
+		utils.RespondWithJSON(w, http.StatusOK, response{
+			Token: jwtToken,
+		})
+	})
+
+	mux.HandleFunc("POST /api/revoke", func(w http.ResponseWriter, r *http.Request) {
+		authToken, err := auth.GetBearerToken(r.Header)
+		if err != nil {
+			log.Printf("Error reading auth header: %s\n", err)
+			utils.RespondWithError(w, http.StatusBadRequest, "Invalid authentication token")
+			return
+		}
+
+		if err = appConfig.Queries.RevokeToken(r.Context(), database.RevokeTokenParams{
+			Token: authToken,
+			RevokedAt: sql.NullTime{
+				Time:  time.Now(),
+				Valid: true,
+			},
+			UpdatedAt: time.Now(),
+		}); err != nil {
+			log.Printf("Error reading auth header: %s\n", err)
+			utils.RespondWithError(w, http.StatusBadRequest, "Invalid authentication token")
+			return
+		}
+
+		utils.RespondWithJSON(w, http.StatusNoContent, struct{}{})
+
 	})
 
 	mux.HandleFunc("POST /api/chirps", func(w http.ResponseWriter, r *http.Request) {
 		token, err := auth.GetBearerToken(r.Header)
 
 		if err != nil {
-			fmt.Printf("Error reading auth token: %s\n", err)
+			log.Printf("[Error reading auth token]: %s\n", err)
 			utils.RespondWithError(w, http.StatusUnauthorized, "Token is missing")
 			return
 		}
 
 		userID, err := auth.ValidateJWT(token, appConfig.Secret)
 		if err != nil {
-			fmt.Printf("Error validating JWT %s\n", err)
+			log.Printf("[Error validating JWT] %s\n", err)
 			utils.RespondWithError(w, http.StatusUnauthorized, "Something went wrong")
 			return
 		}
@@ -204,14 +282,14 @@ func main() {
 		reqBody, err := utils.DecodeBody(r, requestPayload{})
 
 		if err != nil {
-			fmt.Printf("Error decoding request body: %s\n", err)
+			log.Printf("[Error decoding request body]: %s\n", err)
 			utils.RespondWithError(w, http.StatusInternalServerError, "Something went wrong")
 			return
 		}
 		defer r.Body.Close()
 
 		if len(reqBody.Body) > 140 {
-			fmt.Println("Request body too long")
+			log.Println("Request body max size exceeded")
 			utils.RespondWithError(w, http.StatusBadRequest, "Chirp is too long")
 			return
 		}
@@ -222,7 +300,7 @@ func main() {
 		})
 
 		if err != nil {
-			fmt.Printf("Error creating new chirp: %s\n", err)
+			log.Printf("Error creating new chirp: %s\n", err)
 			utils.RespondWithError(w, http.StatusInternalServerError, "Something went wrong")
 			return
 		}
@@ -233,7 +311,7 @@ func main() {
 	mux.HandleFunc("GET /api/chirps", func(w http.ResponseWriter, r *http.Request) {
 		chirps, err := appConfig.Queries.GetChirps(r.Context())
 		if err != nil {
-			fmt.Printf("Error getting chirps: %s\n", err)
+			log.Printf("Error getting chirps: %s\n", err)
 			utils.RespondWithError(w, http.StatusInternalServerError, "Something went wrong")
 			return
 		}
@@ -246,7 +324,7 @@ func main() {
 		err := uuid.Validate(chirpIDParam)
 
 		if err != nil {
-			fmt.Println("Invalid chirpID uuid")
+			log.Println("Invalid chirpID uuid")
 			utils.RespondWithError(w, http.StatusInternalServerError, fmt.Sprintf("Something went wrong: %v", err))
 			return
 		}
@@ -255,13 +333,13 @@ func main() {
 
 		chirp, err := appConfig.Queries.GetChirpByID(r.Context(), chirpID)
 		if errors.Is(err, sql.ErrNoRows) {
-			fmt.Printf("Chirp with ID %v not found\n", chirpID)
+			log.Printf("Chirp with ID %v not found\n", chirpID)
 			http.Error(w, "Not found", http.StatusNotFound)
 			return
 		}
 
 		if err != nil {
-			fmt.Printf("Error getting chirp by ID %v: %s\n", chirpID, err)
+			log.Printf("Error getting chirp by ID %v: %s\n", chirpID, err)
 			utils.RespondWithError(w, http.StatusInternalServerError, fmt.Sprintf("Something went wrong: %v", err))
 			return
 		}
