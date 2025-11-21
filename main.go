@@ -118,6 +118,59 @@ func main() {
 		utils.RespondWithJSON(w, http.StatusCreated, user)
 	})
 
+	mux.HandleFunc("PUT /api/users", func(w http.ResponseWriter, r *http.Request) {
+		token, err := auth.GetBearerToken(r.Header)
+
+		if err != nil {
+			log.Printf("[Error reading auth token]: %s\n", err)
+			utils.RespondWithError(w, http.StatusUnauthorized, http.StatusText(http.StatusUnauthorized))
+			return
+		}
+
+		userID, err := auth.ValidateJWT(token, appConfig.Secret)
+		if err != nil {
+			log.Printf("[Error validating JWT] %s\n", err)
+			utils.RespondWithError(w, http.StatusUnauthorized, http.StatusText(http.StatusUnauthorized))
+			return
+		}
+
+		type requestPayload struct {
+			Password string `json:"password"`
+			Email    string `json:"email"`
+		}
+
+		reqBody, err := utils.DecodeBody(r, requestPayload{})
+
+		if err != nil {
+			log.Println("Error decoding body:", err)
+			utils.RespondWithError(w, http.StatusInternalServerError, http.StatusText(http.StatusInternalServerError))
+			return
+		}
+
+		defer r.Body.Close()
+
+		hash, err := auth.HashPassword(reqBody.Password)
+		if err != nil {
+			log.Printf("Error hashing password: %s\n", err)
+			utils.RespondWithError(w, http.StatusInternalServerError, http.StatusText(http.StatusInternalServerError))
+			return
+		}
+
+		updatedUser, err := appConfig.Queries.UpdateUserInfo(r.Context(), database.UpdateUserInfoParams{
+			ID:             userID,
+			Email:          reqBody.Email,
+			HashedPassword: hash,
+		})
+
+		if err != nil {
+			log.Printf("Error updating user %s: %s\n", userID, err)
+			utils.RespondWithError(w, http.StatusInternalServerError, http.StatusText(http.StatusInternalServerError))
+			return
+		}
+
+		utils.RespondWithJSON(w, http.StatusOK, updatedUser)
+	})
+
 	mux.HandleFunc("POST /api/login", func(w http.ResponseWriter, r *http.Request) {
 		type requestPayload struct {
 			Password string `json:"password"`
@@ -128,7 +181,7 @@ func main() {
 
 		if err != nil {
 			log.Printf("Error decoding request body: %s\n", err)
-			utils.RespondWithError(w, http.StatusInternalServerError, "Something went wrong")
+			utils.RespondWithError(w, http.StatusInternalServerError, http.StatusText(http.StatusInternalServerError))
 			return
 		}
 		defer r.Body.Close()
@@ -164,14 +217,14 @@ func main() {
 		token, err := auth.MakeJWT(user.ID, appConfig.Secret, time.Hour)
 		if err != nil {
 			log.Printf("Error creating token for user with ID: %v\n", user.ID)
-			utils.RespondWithError(w, http.StatusInternalServerError, "Error creating jwt")
+			utils.RespondWithError(w, http.StatusInternalServerError, http.StatusText(http.StatusInternalServerError))
 			return
 		}
 
 		refreshToken, err := auth.MakeRefreshToken()
 		if err != nil {
 			log.Printf("Error creating refresh token: %s\n", err)
-			utils.RespondWithError(w, http.StatusInternalServerError, "Error creating refresh token")
+			utils.RespondWithError(w, http.StatusInternalServerError, http.StatusText(http.StatusInternalServerError))
 			return
 		}
 
@@ -181,7 +234,7 @@ func main() {
 			ExpiresAt: time.Now().Add(time.Hour * 24 * 60),
 		}); err != nil {
 			log.Printf("Error saving refresh token: %s\n", err)
-			utils.RespondWithError(w, http.StatusInternalServerError, "Error occurs saving refresh token")
+			utils.RespondWithError(w, http.StatusInternalServerError, http.StatusText(http.StatusInternalServerError))
 			return
 		}
 
@@ -257,7 +310,6 @@ func main() {
 		}
 
 		utils.RespondWithJSON(w, http.StatusNoContent, struct{}{})
-
 	})
 
 	mux.HandleFunc("POST /api/chirps", func(w http.ResponseWriter, r *http.Request) {
@@ -265,14 +317,14 @@ func main() {
 
 		if err != nil {
 			log.Printf("[Error reading auth token]: %s\n", err)
-			utils.RespondWithError(w, http.StatusUnauthorized, "Token is missing")
+			utils.RespondWithError(w, http.StatusUnauthorized, http.StatusText(http.StatusUnauthorized))
 			return
 		}
 
 		userID, err := auth.ValidateJWT(token, appConfig.Secret)
 		if err != nil {
 			log.Printf("[Error validating JWT] %s\n", err)
-			utils.RespondWithError(w, http.StatusUnauthorized, "Something went wrong")
+			utils.RespondWithError(w, http.StatusUnauthorized, http.StatusText(http.StatusUnauthorized))
 			return
 		}
 
@@ -283,7 +335,7 @@ func main() {
 
 		if err != nil {
 			log.Printf("[Error decoding request body]: %s\n", err)
-			utils.RespondWithError(w, http.StatusInternalServerError, "Something went wrong")
+			utils.RespondWithError(w, http.StatusInternalServerError, http.StatusText(http.StatusInternalServerError))
 			return
 		}
 		defer r.Body.Close()
